@@ -1,18 +1,58 @@
 "use client"
 
 import type React from "react"
+import { useState, useEffect } from "react"
 import Link from "next/link"
 import { Database, Key, Activity, Settings, BarChart3, Users, Zap, Clock, TrendingUp, Shield, Plus } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
+import { dashboardStatsService, type DashboardStats, type RecentActivity } from "@/lib/supabase/dashboard-stats"
 
 interface DashboardOverviewProps {
   user: any
 }
 
 export function DashboardOverview({ user }: DashboardOverviewProps) {
+  const [stats, setStats] = useState<DashboardStats | null>(null)
+  const [recentActivity, setRecentActivity] = useState<RecentActivity[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    const fetchDashboardData = async () => {
+      setLoading(true)
+      try {
+        const [statsResponse, activityResponse] = await Promise.all([
+          dashboardStatsService.getDashboardStats(),
+          dashboardStatsService.getRecentActivity(),
+        ])
+
+        if (statsResponse.success && statsResponse.stats) {
+          setStats(statsResponse.stats)
+        }
+
+        if (activityResponse.success && activityResponse.recentActivity) {
+          setRecentActivity(activityResponse.recentActivity)
+        }
+      } catch (error) {
+        console.error('Error fetching dashboard data:', error)
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    fetchDashboardData()
+  }, [])
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <div className="h-8 w-8 animate-spin rounded-full border-b-2 border-primary" />
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-8">
       {/* Welcome */}
@@ -23,18 +63,18 @@ export function DashboardOverview({ user }: DashboardOverviewProps) {
 
       {/* Quick stats */}
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
-        <StatCard icon={Key} label="API Keys" value="3" />
-        <StatCard icon={Activity} label="API Calls" value="1,247" iconClass="text-green-600" />
-        <StatCard icon={Database} label="Tensors" value="18" iconClass="text-blue-600" />
-        <StatCard icon={TrendingUp} label="Usage" value="76%" iconClass="text-orange-600" />
+        <StatCard icon={Key} label="API Keys" value={stats?.apiKeysCount.toString() || "0"} />
+        <StatCard icon={Activity} label="API Calls" value={stats?.apiCallsCount.toLocaleString() || "0"} iconClass="text-green-600" />
+        <StatCard icon={Database} label="Tensors" value={stats?.tensorsCount.toString() || "0"} iconClass="text-blue-600" />
+        <StatCard icon={TrendingUp} label="Usage" value={`${Math.round(stats?.usagePercentage || 0)}%`} iconClass="text-orange-600" />
       </div>
 
       {/* Two-column grid */}
       <div className="grid gap-6 lg:grid-cols-2">
         <AccountOverview user={user} />
-        <UsageStats />
+        <UsageStats user={user} stats={stats} />
         <QuickActions />
-        <RecentActivity />
+        <RecentActivityCard recentActivity={recentActivity} />
       </div>
     </div>
   )
@@ -117,7 +157,19 @@ function AccountOverview({ user }: { user: any }) {
   )
 }
 
-function UsageStats() {
+function UsageStats({ user, stats }: { user: any; stats: DashboardStats | null }) {
+  const [usageData, setUsageData] = useState<any>(null)
+
+  useEffect(() => {
+    const fetchUsageData = async () => {
+      const response = await dashboardStatsService.getUsageStats()
+      if (response.success && response.usage) {
+        setUsageData(response.usage)
+      }
+    }
+    fetchUsageData()
+  }, [])
+
   const UsageRow = ({
     label,
     percent,
@@ -150,13 +202,36 @@ function UsageStats() {
         <CardDescription>Your API usage for the current month</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <UsageRow label="API Calls" percent={12.47} used="1,247" total="10,000" />
-        <UsageRow label="Data Processing" percent={6.4} used="3.2 GB" total="50 GB" />
-        <UsageRow label="AI Agent Calls" percent={9.12} used="456" total="5,000" />
+        {usageData ? (
+          <>
+            <UsageRow
+              label="API Calls"
+              percent={usageData.apiCalls.percent}
+              used={usageData.apiCalls.used.toLocaleString()}
+              total={usageData.apiCalls.total.toLocaleString()}
+            />
+            <UsageRow
+              label="Data Processing"
+              percent={usageData.dataProcessing.percent}
+              used={`${usageData.dataProcessing.used.toFixed(1)} GB`}
+              total={`${usageData.dataProcessing.total} GB`}
+            />
+            <UsageRow
+              label="AI Agent Calls"
+              percent={usageData.aiAgentCalls.percent}
+              used={usageData.aiAgentCalls.used.toLocaleString()}
+              total={usageData.aiAgentCalls.total.toLocaleString()}
+            />
+          </>
+        ) : (
+          <div className="flex items-center justify-center py-4">
+            <div className="h-6 w-6 animate-spin rounded-full border-b-2 border-primary" />
+          </div>
+        )}
 
         <div className="border-t pt-4">
           <p className="mb-3 text-sm text-muted-foreground">
-            You're on the <strong>Pro</strong> plan. Upgrade for higher limits.
+            You're on the <strong>{user.plan.charAt(0).toUpperCase() + user.plan.slice(1)}</strong> plan. {user.plan !== 'enterprise' ? 'Upgrade for higher limits.' : 'You have the highest plan.'}
           </p>
           <Button variant="outline" className="w-full bg-transparent">
             <Zap className="mr-2 h-4 w-4" />
@@ -209,7 +284,40 @@ function QuickActions() {
   )
 }
 
-function RecentActivity() {
+function RecentActivityCard({ recentActivity }: { recentActivity: RecentActivity[] }) {
+  const getActivityColor = (type: string) => {
+    switch (type) {
+      case 'tensor':
+        return 'green-500'
+      case 'api_key':
+        return 'blue-500'
+      case 'upload':
+        return 'orange-500'
+      case 'query':
+        return 'purple-500'
+      case 'profile':
+        return 'pink-500'
+      default:
+        return 'gray-500'
+    }
+  }
+
+  const formatTimeAgo = (timestamp: string) => {
+    const now = new Date()
+    const then = new Date(timestamp)
+    const diffMs = now.getTime() - then.getTime()
+    const diffMins = Math.floor(diffMs / 60000)
+    const diffHours = Math.floor(diffMs / 3600000)
+    const diffDays = Math.floor(diffMs / 86400000)
+
+    if (diffMins < 60) {
+      return `${diffMins} min${diffMins !== 1 ? 's' : ''} ago`
+    } else if (diffHours < 24) {
+      return `${diffHours} hour${diffHours !== 1 ? 's' : ''} ago`
+    } else {
+      return `${diffDays} day${diffDays !== 1 ? 's' : ''} ago`
+    }
+  }
   const Item = ({
     color,
     title,
@@ -238,10 +346,20 @@ function RecentActivity() {
         <CardDescription>Your latest API calls and operations</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <Item color="green-500" title="Tensor analysis completed" time="2 min ago" />
-        <Item color="blue-500" title="API key generated" time="1 h ago" />
-        <Item color="orange-500" title="Data upload processed" time="3 h ago" />
-        <Item color="purple-500" title="Profile updated" time="1 day ago" />
+        {recentActivity.length > 0 ? (
+          recentActivity.map((activity) => (
+            <Item
+              key={activity.id}
+              color={getActivityColor(activity.type)}
+              title={activity.title}
+              time={formatTimeAgo(activity.timestamp)}
+            />
+          ))
+        ) : (
+          <div className="text-center py-4 text-sm text-muted-foreground">
+            No recent activity
+          </div>
+        )}
       </CardContent>
     </Card>
   )
